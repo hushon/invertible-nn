@@ -24,6 +24,10 @@ class InvertibleCouplingLayer(Function):
         Reversible Forward pass.
         Each reversible layer implements its own forward pass pass logic.
         """
+        ctx.F = F
+        ctx.G = G
+        if hasattr(x, "save_for_backward"):
+            ctx.prev_save_for_backward = x.save_for_backward # 이전 레이어한테 input 복원한거 보내줘야하므로 필요
 
         # obtaining X_1 and X_2 from the concatenated input
         X_1, X_2 = torch.chunk(x, 2, dim=-1)
@@ -44,13 +48,8 @@ class InvertibleCouplingLayer(Function):
         # free memory since X_2 is now not needed
         del X_2
         
-        ctx.F = F
-        ctx.G = G
-        if hasattr(x, "ctx"):
-            ctx.prev_ctx = x.ctx # 이전 레이어한테 input 복원한거 보내줘야하므로 필요
-
         output = torch.cat([Y_1, Y_2], dim=-1)
-        output.ctx = ctx  ## 이러면 forward 할때 output이 free 될수 있나?
+        output.save_for_backward = ctx.save_for_backward  ## 이러면 forward 할때 output이 free 될수 있나?
 
         ## output 다음에 오는 함수가 invertible 한지 알 수 있나?
         ## invertible 하다면 output 을 free 하고 아니면 ctx.save_for_backward 호출하도록
@@ -119,10 +118,10 @@ class InvertibleCouplingLayer(Function):
         dx = torch.cat([dX_1, dX_2], dim=-1)
 
         ## 여기서 다음 backward pass 에 X_1, X_2 를 전달해줘야함
-        if hasattr(ctx, "prev_ctx"):
+        if hasattr(ctx, "prev_save_for_backward"):
             X_1 = Y_1 - f_X_2
             x = torch.cat([X_1, X_2], dim=-1)
-            ctx.prev_ctx.save_for_backward(x.detach().clone())
+            ctx.prev_save_for_backward(x.detach().clone())
 
         return dx, None, None, None
 
@@ -158,7 +157,8 @@ class CouplingBlock(nn.Module):
 
 
 def finite_diff_grad_check():
-    input = torch.rand(1, 16, requires_grad=True, dtype=torch.float64)
+    device = torch.device("cuda")
+    input = torch.rand(1, 16, requires_grad=True, dtype=torch.float64, device=device)
 
     num_blocks = 10
     mlp = lambda: nn.Sequential(
@@ -171,15 +171,17 @@ def finite_diff_grad_check():
         CouplingBlock(mlp(), mlp())
         for _ in range(num_blocks)
     ])
-    model.to(torch.float64)
+    model.to(dtype=torch.float64, device=device)
     
+    # @torch.autocast("cuda", dtype=torch.bfloat16)
+    # @torch.cuda.amp.autocast(dtype=torch.bfloat16)
     def forward_loss_fn(x):
         x = model(x)
-        if hasattr(x, "ctx"):
-            x.ctx.save_for_backward(x.detach().clone())
+        if hasattr(x, "save_for_backward"):
+            x.save_for_backward(x.detach().clone())
         loss = x.norm()
         return loss
-    
+
     if torch.autograd.gradcheck(forward_loss_fn, input):
         print("Gradient check passed!")
 
