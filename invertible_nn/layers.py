@@ -75,7 +75,7 @@ class InvertibleCouplingLayer(Function):
         # temporarily record intermediate activation for G
         # and use them for gradient calculcation of G
         with torch.enable_grad():
-            Y_1.requires_grad = True
+            Y_1.requires_grad_(True)
 
             # reconstrucating the intermediate activations
             # and the computational graph for F.
@@ -104,7 +104,7 @@ class InvertibleCouplingLayer(Function):
 
         # record F activations and calc gradients on F
         with torch.enable_grad():
-            X_2.requires_grad = True
+            X_2.requires_grad_(True)
 
             # reconstrucating the intermediate activations
             # and the computational graph for F.
@@ -135,14 +135,14 @@ class CouplingBlock(nn.Module):
     Y_1 = X_1 + F(X_2)
     Y_2 = X_2 + G(Y_1)
     """
-    def __init__(self, F: nn.Module, G: nn.Module, use_invertible=True):
+    def __init__(self, F: nn.Module, G: nn.Module, invert_when_backward=True):
         super().__init__()
         self.F = F
         self.G = G
-        self.use_invertible = use_invertible
+        self.invert_when_backward = invert_when_backward
 
     def forward(self, x):
-        if self.use_invertible:
+        if self.invert_when_backward:
             return InvertibleCouplingLayer.apply(x, self.F, self.G)
             ## prev_ctx 에 output 넣어주는걸 여기로 옮겨도 괜찮을듯
             ## ctx 가 autograd 인터페이스 밖으로 나오는게 좋지않음.. 메모리 free 안될수도 있음.
@@ -159,16 +159,18 @@ class CouplingBlock(nn.Module):
 
 def finite_diff_grad_check():
     input = torch.rand(1, 16, requires_grad=True, dtype=torch.float64)
-    model = nn.Sequential(
-        CouplingBlock(
-            nn.Linear(8, 8),
-            nn.Linear(8, 8),
-        ),
-        CouplingBlock(
-            nn.Linear(8, 8),
-            nn.Linear(8, 8),
-        ),
+
+    num_blocks = 10
+    mlp = lambda: nn.Sequential(
+        nn.LayerNorm(8),
+        nn.Linear(8, 8),
+        nn.GELU(),
+        nn.Linear(8, 8)
     )
+    model = nn.Sequential(*[
+        CouplingBlock(mlp(), mlp())
+        for _ in range(num_blocks)
+    ])
     model.to(torch.float64)
     
     def forward_loss_fn(x):
