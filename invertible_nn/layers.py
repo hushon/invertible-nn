@@ -7,6 +7,13 @@ from torch.autograd import Function as Function
 from typing import Callable, Tuple, Any
 
 
+class InvertibleLayer(Function):
+    @staticmethod
+    def forward(ctx, x):
+        if hasattr(x, "save_for_backward"):
+            ctx.save_for_backward = x.save_for_backward
+            delattr(x, "save_for_backward")
+
 
 class InvertibleCouplingLayer(Function):
 
@@ -26,8 +33,9 @@ class InvertibleCouplingLayer(Function):
         """
         ctx.F = F
         ctx.G = G
-        if hasattr(x, "save_for_backward"):
-            ctx.prev_save_for_backward = x.save_for_backward # 이전 레이어한테 input 복원한거 보내줘야하므로 필요
+        if hasattr(x, "release_saved_output"):  ## invertible layer 의 출력인지 확인
+            x.release_saved_output()  # ctx.saved_tensors 에 있는 레퍼런스 삭제
+        ctx.requires_output = hasattr(x, "release_saved_output")  # 다음 레이어야 output 을 저장해야하는지 확인
 
         # obtaining X_1 and X_2 from the concatenated input
         X_1, X_2 = torch.chunk(x, 2, dim=-1)
@@ -49,14 +57,22 @@ class InvertibleCouplingLayer(Function):
         del X_2
         
         output = torch.cat([Y_1, Y_2], dim=-1)
-        output.save_for_backward = ctx.save_for_backward  ## 이러면 forward 할때 output이 free 될수 있나?
+        # output.save_for_backward = ctx.save_for_backward  ## 이러면 forward 할때 output이 free 될수 있나?
+        ## 일단 저장하고, 뒤에 오는게 InvertibleCouplingLayer 타입이면 직접 해제하는 식으로 처리?
+        ## 근데 기본적으로 해제될텐데? explicit 하게 저장하도록 하는게 맞는듯
+        ## forward 할때 default 는 해제임.
+        ## 다음 레이어가 InvertibleCouplingLayer 타입이 아닌지 체크하고, 아니라면 저장하도록 하는게 맞는듯
+        ## invertible layer 가 아니면 save_for_backward 호출하도록 하는 방법..?
+        # 입력이 invertible 레이어에서 온 것인지 확인
+        ctx.output = output
 
-        ## output 다음에 오는 함수가 invertible 한지 알 수 있나?
-        ## invertible 하다면 output 을 free 하고 아니면 ctx.save_for_backward 호출하도록
-
+        def release_saved_output():
+            ctx.output = None
+        output.release_saved_tensors = release_saved_output
         return output
 
     @staticmethod
+    @torch.autograd.function.once_differentiable
     @torch.cuda.amp.custom_bwd
     def backward(ctx, dy: torch.Tensor) -> torch.Tensor:
         """
@@ -64,7 +80,10 @@ class InvertibleCouplingLayer(Function):
         Each layer implements its own logic for backward pass (both
         activation recomputation and grad calculation).
         """
-        y = ctx.to_save[0]  ## next block backward 때 또는 마지막 레이어 끝나고 사람이 넣어줌
+        if ctx.output is not None:
+            y = ctx.output
+        else:
+            y = dy.output
         F, G = ctx.F, ctx.G
 
         # obtaining gradients dX_1 and dX_2 from the concatenated input
@@ -118,10 +137,10 @@ class InvertibleCouplingLayer(Function):
         dx = torch.cat([dX_1, dX_2], dim=-1)
 
         ## 여기서 다음 backward pass 에 X_1, X_2 를 전달해줘야함
-        if hasattr(ctx, "prev_save_for_backward"):
+        if ctx.requires_output:
             X_1 = Y_1 - f_X_2
             x = torch.cat([X_1, X_2], dim=-1)
-            ctx.prev_save_for_backward(x.detach().clone())
+            dx.output = x.detach().clone()
 
         return dx, None, None, None
 
@@ -129,7 +148,7 @@ class InvertibleCouplingLayer(Function):
 class CouplingBlock(nn.Module):
     """
     F 랑 G 는 임의의 모듈
-    F랑 G를 coupling 구조에 끼워넣음. 
+    F랑 G를 coupling 구조에 끼워넣음.
     backward pass 할때는 뒷쪽 블락에서 보내준 activation 값을 이용해 중간값 재계산
     Y_1 = X_1 + F(X_2)
     Y_2 = X_2 + G(Y_1)
@@ -177,8 +196,6 @@ def finite_diff_grad_check():
     # @torch.cuda.amp.autocast(dtype=torch.bfloat16)
     def forward_loss_fn(x):
         x = model(x)
-        if hasattr(x, "save_for_backward"):
-            x.save_for_backward(x.detach().clone())
         loss = x.norm()
         return loss
 

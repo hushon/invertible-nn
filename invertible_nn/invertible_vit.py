@@ -127,10 +127,6 @@ class InvertibleVisionTransformer(nn.Module):
         for layer in self.layers:
             x = layer(x)
 
-        if hasattr(x, "ctx"):
-            # x.ctx.output = x.detach().clone()
-            x.ctx.save_for_backward(x.detach().clone())
-
         # aggregate across sequence length
         x = x.mean(1)
 
@@ -142,3 +138,28 @@ class InvertibleVisionTransformer(nn.Module):
 
         # return pre-softmax logits
         return x
+
+
+def test():
+    device = torch.device("cuda")
+    input = torch.rand(1000, 3, 224, 224, requires_grad=True, dtype=torch.float32, device=device)
+
+    model = InvertibleVisionTransformer(
+        patch_size=(16, 16),
+        image_size=(224, 224),
+        num_classes=1000
+    )
+    model.to(dtype=torch.float32, device=device)
+    
+    # @torch.autocast("cuda", dtype=torch.bfloat16)
+    with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+        output = model(input)
+        loss = output.norm()
+    loss.backward()
+    
+    breakpoint()
+
+
+if __name__ == "__main__":
+    test()
+
