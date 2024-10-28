@@ -70,7 +70,7 @@ class InvertibleCouplingLayer(Function):
 
         def release_saved_output():
             del ctx.output
-
+            # delattr(ctx, 'output')
         output.release_saved_output = release_saved_output
         return output
 
@@ -205,6 +205,7 @@ def finite_diff_grad_check():
         loss = x.norm()
         return loss
 
+    # forward_loss_fn(input).backward()
     if torch.autograd.gradcheck(forward_loss_fn, input):
         print("Gradient check passed!")
 
