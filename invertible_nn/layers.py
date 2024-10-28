@@ -39,6 +39,7 @@ class InvertibleCouplingLayer(Function):
 
         # obtaining X_1 and X_2 from the concatenated input
         X_1, X_2 = torch.chunk(x, 2, dim=-1)
+        del x
 
         """
         forward pass equations:
@@ -57,6 +58,7 @@ class InvertibleCouplingLayer(Function):
         del X_2
         
         output = torch.cat([Y_1, Y_2], dim=-1)
+        del Y_1, Y_2
         # output.save_for_backward = ctx.save_for_backward  ## 이러면 forward 할때 output이 free 될수 있나?
         ## 일단 저장하고, 뒤에 오는게 InvertibleCouplingLayer 타입이면 직접 해제하는 식으로 처리?
         ## 근데 기본적으로 해제될텐데? explicit 하게 저장하도록 하는게 맞는듯
@@ -64,11 +66,12 @@ class InvertibleCouplingLayer(Function):
         ## 다음 레이어가 InvertibleCouplingLayer 타입이 아닌지 체크하고, 아니라면 저장하도록 하는게 맞는듯
         ## invertible layer 가 아니면 save_for_backward 호출하도록 하는 방법..?
         # 입력이 invertible 레이어에서 온 것인지 확인
-        ctx.output = output
+        ctx.output = output.detach()
 
         def release_saved_output():
-            ctx.output = None
-        output.release_saved_tensors = release_saved_output
+            del ctx.output
+
+        output.release_saved_output = release_saved_output
         return output
 
     @staticmethod
@@ -80,10 +83,12 @@ class InvertibleCouplingLayer(Function):
         Each layer implements its own logic for backward pass (both
         activation recomputation and grad calculation).
         """
-        if ctx.output is not None:
+        if hasattr(ctx, 'output'):  # ctx 가 output 을 가지고 있으면 그걸 쓰고 아니면 dy 에 들어있을 것으로 기대
             y = ctx.output
+            del ctx.output
         else:
             y = dy.output
+            del dy.output
         F, G = ctx.F, ctx.G
 
         # obtaining gradients dX_1 and dX_2 from the concatenated input
@@ -101,6 +106,9 @@ class InvertibleCouplingLayer(Function):
             # gradients in G in backward pass.
             g_Y_1 = G(Y_1)
             g_Y_1.backward(dY_2)
+        Y_1_grad = Y_1.grad
+        Y_1 = Y_1.detach()
+        g_Y_1 = g_Y_1.detach()
 
         # activation recomputation is by design and not part of
         # the computation graph in forward pass. Hence we do not
@@ -115,10 +123,10 @@ class InvertibleCouplingLayer(Function):
             # the gradients for the previous block
             # note that it is called dY_1 but it in fact dX_1 in math.
             # reusing same variable to save memory
-            dX_1 = dY_1 + Y_1.grad
+            dX_1 = dY_1 + Y_1_grad
 
             # free memory since Y_1.grad is now not needed
-            Y_1.grad = None
+            del Y_1_grad
 
         # record F activations and calc gradients on F
         with torch.enable_grad():
@@ -130,18 +138,22 @@ class InvertibleCouplingLayer(Function):
             # gradients in G in backward pass.
             f_X_2 = F(X_2)
             f_X_2.backward(dX_1)
-        
+        X_2_grad = X_2.grad
+        X_2 = X_2.detach()
+        f_X_2 = f_X_2.detach()
+
         with torch.no_grad():
-            dX_2 = dY_2 + X_2.grad
+            dX_2 = dY_2 + X_2_grad
+            del X_2_grad
 
         dx = torch.cat([dX_1, dX_2], dim=-1)
 
         ## 여기서 다음 backward pass 에 X_1, X_2 를 전달해줘야함
         if ctx.requires_output:
             X_1 = Y_1 - f_X_2
+            del f_X_2
             x = torch.cat([X_1, X_2], dim=-1)
-            dx.output = x.detach().clone()
-
+            dx.output = x.detach()
         return dx, None, None, None
 
 
@@ -162,12 +174,6 @@ class CouplingBlock(nn.Module):
     def forward(self, x):
         if self.invert_when_backward:
             return InvertibleCouplingLayer.apply(x, self.F, self.G)
-            ## prev_ctx 에 output 넣어주는걸 여기로 옮겨도 괜찮을듯
-            ## ctx 가 autograd 인터페이스 밖으로 나오는게 좋지않음.. 메모리 free 안될수도 있음.
-            ## 잘하면 output 에 backward hook 을 이용해서 ctx 를 숨길수도 있을듯 한데..
-            ## 아님 외부에 context manager 를 둬서 거기다가 ctx 를 숨기는 방법도 있을듯
-            ## with invertible_forward(enabled=True): 이런식으로
-            ## 근데 그럼 다음 레이어가 invertible 한지를 알아야함 (input 을 되돌려줄수있는지)
         else:
             X_1, X_2 = torch.chunk(x, 2, dim=-1)
             Y_1 = X_1 + self.F(X_2)
