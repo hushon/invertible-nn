@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "invertible-nn"
+version = "0.1.0"
+description = "Yet another invertible neural nets"
+authors = [
+    { name = "Hyounguk Shon", email = "hyounguk.shon@kaist.ac.kr" }
+]
+dependencies = [
+    "torch",
+]
+# Remove `python` from here, as it's not allowed in the `project` section
+# Use the `python-requires` field under `[tool.setuptools]` instead
+
+[project.urls]
+homepage = "https://github.com/hushon/invertible-nn"
