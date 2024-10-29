@@ -9,7 +9,7 @@ pip install git+https://github.com/hushon/invertible-nn.git
 ## Examples
 The basic building block is the `invertible_nn.layers.CouplingBlock` which implements the reversible layer using coupling function.  
 Coupling function consists of an arbitrary function F and G which performs following transform:  
-$$X_1, X_2 \leftarrow \text{split}(X)$$ 
+$$X_1, X_2 \leftarrow \text{split}(X)$$  
 $$Y_1 = X_1 + F(X_2)$$  
 $$Y_2 = X_2 + G(Y_1)$$  
 $$Y \leftarrow [Y_1, Y_2]$$  
