@@ -142,7 +142,7 @@ class InvertibleVisionTransformer(nn.Module):
 
 def test():
     device = torch.device("cuda")
-    input = torch.rand(1000, 3, 224, 224, requires_grad=True, dtype=torch.float32, device=device)
+    input = torch.rand(1000, 3, 224, 224, requires_grad=True, device=device)
 
     model = InvertibleVisionTransformer(
         depth=64,
@@ -150,17 +150,16 @@ def test():
         image_size=(224, 224),
         num_classes=1000
     )
-    model.to(dtype=torch.float32, device=device)
+    model.to(device=device)
 
     import numpy as np
     print(sum([np.prod(p.size()) for p in model.parameters()]))
     
     # @torch.autocast("cuda", dtype=torch.bfloat16)
-    with torch.cuda.amp.autocast(enabled=False, dtype=torch.bfloat16):
+    with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
         output = model(input)
         loss = output.norm()
 
-    breakpoint()
     loss.backward()
     breakpoint()
 
