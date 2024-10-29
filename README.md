@@ -20,7 +20,7 @@ Because this function is reversible, the intermediate states can be reconstructe
 A reversible Vision Transformer architecture is implemented based on the coupling block. 
 
 ```python
-from invertible_nn.layers import InvertibleVisionTransformer
+from invertible_nn.invertible_vit import InvertibleVisionTransformer
 
 device = torch.device("cuda")
 
