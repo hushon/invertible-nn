@@ -181,7 +181,7 @@ class CouplingBlock(nn.Module):
 class InvertibleResidualLayer(Function):
     @staticmethod
     @torch.cuda.amp.custom_fwd
-    def forward(ctx, x: torch.Tensor, F: Callable, max_iter=100, use_anderson_acceleration=False) -> torch.Tensor:
+    def forward(ctx, x: torch.Tensor, F: Callable, max_iter: int, use_anderson_acceleration: bool) -> torch.Tensor:
         """
         forward pass equations:
         y = x + F(x)
@@ -209,7 +209,7 @@ class InvertibleResidualLayer(Function):
         return output
 
     @staticmethod
-    def fixed_point_iteration(F, y, max_iter=100, atol=1e-5, verbose=False):
+    def fixed_point_iteration(F, y, max_iter, atol=1e-5, verbose=True):
         x = y
         for _ in range(max_iter):
             x = y - F(x)
@@ -221,7 +221,7 @@ class InvertibleResidualLayer(Function):
         return x
 
     @staticmethod
-    def anderson_acceleration(F, y, max_iter=100, atol=1e-5, m=5):
+    def anderson_acceleration(F, y, max_iter, atol=1e-5, m=5):
         pass
 
     @staticmethod
@@ -257,7 +257,7 @@ class ResidualBlock(nn.Module):
         self.F = F
 
     def forward(self, x):
-        return InvertibleResidualLayer.apply(x, self.F, 10, False)
+        return InvertibleResidualLayer.apply(x, self.F, 100, False)
 
 
 def finite_diff_grad_check():
