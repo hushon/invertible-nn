@@ -209,12 +209,15 @@ class InvertibleResidualLayer(Function):
         return output
 
     @staticmethod
-    def fixed_point_iteration(F, y, max_iter=100, atol=1e-5):
+    def fixed_point_iteration(F, y, max_iter=100, atol=1e-5, verbose=False):
         x = y
         for _ in range(max_iter):
             x = y - F(x)
             if torch.allclose(x, y, atol=atol):
                 break
+        else:  # when loop did not break
+            if verbose:
+                print("Fixed point iteration did not converge.")
         return x
 
     @staticmethod
