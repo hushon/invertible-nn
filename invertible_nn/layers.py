@@ -277,14 +277,18 @@ def finite_diff_grad_check():
 
     mlp = lambda: nn.Sequential(
         # nn.LayerNorm(8),
-        torch.nn.utils.parametrizations.spectral_norm(nn.Linear(16, 16), n_power_iterations=50),
+        nn.Linear(16, 16),
         nn.ReLU(),
-        torch.nn.utils.parametrizations.spectral_norm(nn.Linear(16, 16), n_power_iterations=50),
+        nn.Linear(16, 16),
     )
     model = nn.Sequential(*[
         ResidualBlock(mlp())
         for _ in range(num_blocks)
     ])
+    def apply_spectral_normalization(module):
+        if hasattr(module, "weight"):
+            torch.nn.utils.parametrizations.spectral_norm(module, n_power_iterations=50),
+    model.apply(apply_spectral_normalization)
 
     model.to(dtype=torch.float64, device=device)
     
