@@ -30,22 +30,21 @@ class InvertibleCouplingLayer(Function):
         """
         Reversible Forward pass.
         Each reversible layer implements its own forward pass pass logic.
+        forward pass equations:
+        Y_1 = X_1 + F(X_2), F = Attention
+        Y_2 = X_2 + G(Y_1), G = MLP
         """
         ctx.F = F
         ctx.G = G
         if hasattr(x, "release_saved_output"):  ## invertible layer 의 출력인지 확인
             x.release_saved_output()  # ctx.saved_tensors 에 있는 레퍼런스 삭제
+            ctx.save_output = x.save_output
         ctx.requires_output = hasattr(x, "release_saved_output")  # 다음 레이어야 output 을 저장해야하는지 확인
 
         # obtaining X_1 and X_2 from the concatenated input
         X_1, X_2 = torch.chunk(x, 2, dim=-1)
         del x
 
-        """
-        forward pass equations:
-        Y_1 = X_1 + F(X_2), F = Attention
-        Y_2 = X_2 + G(Y_1), G = MLP
-        """
 
         Y_1 = X_1 + F(X_2)
 
@@ -71,7 +70,10 @@ class InvertibleCouplingLayer(Function):
         def release_saved_output():
             del ctx.output
             # delattr(ctx, 'output')
+        def save_output(x):
+            ctx.output = x
         output.release_saved_output = release_saved_output
+        output.save_output = save_output
         return output
 
     @staticmethod
@@ -83,12 +85,7 @@ class InvertibleCouplingLayer(Function):
         Each layer implements its own logic for backward pass (both
         activation recomputation and grad calculation).
         """
-        if hasattr(ctx, 'output'):  # ctx 가 output 을 가지고 있으면 그걸 쓰고 아니면 dy 에 들어있을 것으로 기대
-            y = ctx.output
-            del ctx.output
-        else:
-            y = dy.output
-            del dy.output
+        y = ctx.output
         F, G = ctx.F, ctx.G
 
         # obtaining gradients dX_1 and dX_2 from the concatenated input
@@ -153,7 +150,7 @@ class InvertibleCouplingLayer(Function):
             X_1 = Y_1 - f_X_2
             del f_X_2
             x = torch.cat([X_1, X_2], dim=-1)
-            dx.output = x.detach()
+            ctx.save_output(x.detach())
         return dx, None, None, None
 
 
@@ -181,21 +178,114 @@ class CouplingBlock(nn.Module):
             return torch.cat([Y_1, Y_2], dim=-1)
 
 
+class InvertibleResidualLayer(Function):
+    @staticmethod
+    @torch.cuda.amp.custom_fwd
+    def forward(ctx, x: torch.Tensor, F: Callable, max_iter=100, use_anderson_acceleration=False) -> torch.Tensor:
+        """
+        forward pass equations:
+        y = x + F(x)
+        F(x) must be 1-Lipschitz
+        """
+        ctx.F = F
+        if hasattr(x, "release_saved_output"):  ## invertible layer 의 출력인지 확인
+            x.release_saved_output()  # ctx.saved_tensors 에 있는 레퍼런스 삭제
+            ctx.save_output = x.save_output
+        ctx.requires_output = hasattr(x, "release_saved_output")  # 다음 레이어야 output 을 저장해야하는지 확인
+
+        output = x + F(x)
+
+        ctx.output = output.detach()
+        ctx.max_iter = max_iter
+        ctx.use_anderson_acceleration = use_anderson_acceleration
+
+        def release_saved_output():
+            del ctx.output
+            # delattr(ctx, 'output')
+        def save_output(x):
+            ctx.output = x
+        output.release_saved_output = release_saved_output
+        output.save_output = save_output
+        return output
+
+    @staticmethod
+    def fixed_point_iteration(F, y, max_iter=100, atol=1e-5):
+        x = y
+        for _ in range(max_iter):
+            x = y - F(x)
+            if torch.allclose(x, y, atol=atol):
+                break
+        return x
+
+    @staticmethod
+    def anderson_acceleration(F, y, max_iter=100, atol=1e-5, m=5):
+        pass
+
+    @staticmethod
+    @torch.autograd.function.once_differentiable
+    @torch.cuda.amp.custom_bwd
+    def backward(ctx, dy: torch.Tensor) -> torch.Tensor:
+        y = ctx.output
+        F = ctx.F
+        max_iter = ctx.max_iter
+        use_anderson_acceleration = ctx.use_anderson_acceleration
+
+        # reconstruct x from y
+        if use_anderson_acceleration:
+            x = InvertibleResidualLayer.anderson_acceleration(F, y, max_iter)
+        else:
+            x = InvertibleResidualLayer.fixed_point_iteration(F, y, max_iter)
+
+        with torch.enable_grad():
+            x.requires_grad_(True)
+            F(x).backward(dy)
+            dx = x.grad + dy
+            x = x.detach()
+
+        if ctx.requires_output:
+            ctx.save_output(x.detach())
+
+        return dx, None, None, None
+
+
+class ResidualBlock(nn.Module):
+    def __init__(self, F: nn.Module):
+        super().__init__()
+        self.F = F
+
+    def forward(self, x):
+        return InvertibleResidualLayer.apply(x, self.F, 10, False)
+
+
 def finite_diff_grad_check():
-    device = torch.device("cuda")
+    # device = torch.device("cuda")
+    device = torch.device("cpu")
     input = torch.rand(1, 16, requires_grad=True, dtype=torch.float64, device=device)
 
     num_blocks = 10
+    # mlp = lambda: nn.Sequential(
+    #     nn.LayerNorm(8),
+    #     nn.Linear(8, 8),
+    #     nn.GELU(),
+    #     nn.Linear(8, 8)
+    # )
+    # model = nn.Sequential(*[
+    #     CouplingBlock(mlp(), mlp())
+    #     for _ in range(num_blocks)
+    # ])
+
+
     mlp = lambda: nn.Sequential(
-        nn.LayerNorm(8),
-        nn.Linear(8, 8),
-        nn.GELU(),
-        nn.Linear(8, 8)
+        # nn.LayerNorm(8),
+        torch.nn.utils.parametrizations.spectral_norm(nn.Linear(16, 16), n_power_iterations=50),
+        nn.ReLU(),
+        torch.nn.utils.parametrizations.spectral_norm(nn.Linear(16, 16), n_power_iterations=50),
     )
     model = nn.Sequential(*[
-        CouplingBlock(mlp(), mlp())
+        ResidualBlock(mlp())
         for _ in range(num_blocks)
     ])
+
     model.to(dtype=torch.float64, device=device)
     
     # @torch.autocast("cuda", dtype=torch.bfloat16)
@@ -205,8 +295,7 @@ def finite_diff_grad_check():
         loss = x.norm()
         return loss
 
-    # forward_loss_fn(input).backward()
-    if torch.autograd.gradcheck(forward_loss_fn, input):
+    if torch.autograd.gradcheck(forward_loss_fn, input, nondet_tol=1e-5):
         print("Gradient check passed!")
 
 
