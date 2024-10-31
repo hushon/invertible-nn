@@ -214,9 +214,11 @@ class InvertibleResidualLayer(Function):
         for _ in range(max_iter):
             x = y - F(x)
             if torch.allclose(x, y, atol=atol):
-                return x
-        if verbose:  # when the loop did not break
-            print("Fixed point iteration did not converge.")
+                break
+        else:  # when loop did not break
+            if verbose:
+                print("Fixed point iteration did not converge.")
+        return x
 
     @staticmethod
     def anderson_acceleration(F, y, max_iter=100, atol=1e-5, m=5):
