@@ -171,6 +171,30 @@ class CouplingBlock(nn.Module):
 
 
 class InvertibleResidualLayer(Function):
+
+    @staticmethod
+    def fixed_point_iteration(
+        F: Callable,
+        y: torch.Tensor,
+        max_iter: int,
+        atol: float = 1e-5,
+        verbose: bool = True
+    ) -> torch.Tensor:
+        x = y
+        for _ in range(max_iter):
+            x_prev = x
+            x = y - F(x_prev)
+            if torch.allclose(x, x_prev, atol=atol):
+                break
+        else:  # when loop did not break
+            if verbose:
+                print("Fixed point iteration did not converge.")
+        return x
+
+    @staticmethod
+    def anderson_acceleration(F, y, max_iter, atol=1e-5, m=5):
+        pass
+
     @staticmethod
     @torch.cuda.amp.custom_fwd
     def forward(ctx, x: torch.Tensor, F: Callable, max_iter: int, use_anderson_acceleration: bool) -> torch.Tensor:
@@ -199,23 +223,6 @@ class InvertibleResidualLayer(Function):
         output.release_saved_output = release_saved_output
         output.save_output = save_output
         return output
-
-    @staticmethod
-    def fixed_point_iteration(F, y, max_iter, atol=1e-5, verbose=True):
-        x = y
-        for _ in range(max_iter):
-            x_prev = x
-            x = y - F(x_prev)
-            if torch.allclose(x, x_prev, atol=atol):
-                break
-        else:  # when loop did not break
-            if verbose:
-                print("Fixed point iteration did not converge.")
-        return x
-
-    @staticmethod
-    def anderson_acceleration(F, y, max_iter, atol=1e-5, m=5):
-        pass
 
     @staticmethod
     @torch.autograd.function.once_differentiable
@@ -248,6 +255,12 @@ class ResidualBlock(nn.Module):
     def __init__(self, F: nn.Module):
         super().__init__()
         self.F = F
+        self.F.apply(self.apply_spectral_normalization)
+
+    @staticmethod
+    def apply_spectral_normalization(module):
+        if hasattr(module, "weight"):
+            torch.nn.utils.parametrizations.spectral_norm(module, n_power_iterations=50)
 
     def forward(self, x):
         return InvertibleResidualLayer.apply(x, self.F, 100, False)
@@ -281,10 +294,6 @@ def finite_diff_grad_check():
         ResidualBlock(mlp())
         for _ in range(num_blocks)
     ])
-    def apply_spectral_normalization(module):
-        if hasattr(module, "weight"):
-            torch.nn.utils.parametrizations.spectral_norm(module, n_power_iterations=50),
-    model.apply(apply_spectral_normalization)
 
     model.to(dtype=torch.float64, device=device)
     
