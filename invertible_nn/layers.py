@@ -7,14 +7,6 @@ from torch.autograd import Function as Function
 from typing import Callable, Tuple, Any
 
 
-class InvertibleLayer(Function):
-    @staticmethod
-    def forward(ctx, x):
-        if hasattr(x, "save_for_backward"):
-            ctx.save_for_backward = x.save_for_backward
-            delattr(x, "save_for_backward")
-
-
 class InvertibleCouplingLayer(Function):
 
     """
@@ -212,8 +204,9 @@ class InvertibleResidualLayer(Function):
     def fixed_point_iteration(F, y, max_iter, atol=1e-5, verbose=True):
         x = y
         for _ in range(max_iter):
-            x = y - F(x)
-            if torch.allclose(x, y, atol=atol):
+            x_prev = x
+            x = y - F(x_prev)
+            if torch.allclose(x, x_prev, atol=atol):
                 break
         else:  # when loop did not break
             if verbose:
