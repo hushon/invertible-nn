@@ -142,10 +142,10 @@ class InvertibleVisionTransformer(nn.Module):
 
 def test():
     device = torch.device("cuda")
-    input = torch.rand(1000, 3, 224, 224, requires_grad=True, device=device)
+    input = torch.rand(1, 3, 224, 224, requires_grad=True, device=device)
 
     model = InvertibleVisionTransformer(
-        depth=64,
+        depth=30,
         patch_size=(16, 16),
         image_size=(224, 224),
         num_classes=1000
@@ -154,14 +154,31 @@ def test():
 
     import numpy as np
     print(sum([np.prod(p.size()) for p in model.parameters()]))
-    
-    # @torch.autocast("cuda", dtype=torch.bfloat16)
-    with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
-        output = model(input)
-        loss = output.norm()
 
-    loss.backward()
+    # # @torch.autocast("cuda", dtype=torch.bfloat16)
+    # with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
+    #     output = model(input)
+    #     loss = output.norm()
+    # loss.backward()
+    # breakpoint()
+
+
+    # @torch.autocast("cuda", dtype=torch.bfloat16)
+    # @torch.cuda.amp.autocast(dtype=torch.bfloat16)
+    def forward_loss_fn(x):
+        x = model(x)
+        loss = x.norm()
+        return loss
+    
     breakpoint()
+    for module in model.modules():
+        if isinstance(module, InvertibleTransformerBlock):
+            module.invert_when_backward = False
+    breakpoint()
+
+
+    if torch.autograd.gradcheck(forward_loss_fn, input, nondet_tol=1e-5):
+        print("Gradient check passed!")
 
 
 if __name__ == "__main__":
