@@ -1,9 +1,6 @@
 import torch
 from torch import nn
-
-# Needed to implement custom backward pass
 from torch.autograd import Function
-
 from typing import Callable, Tuple, Any
 from dataclasses import dataclass
 

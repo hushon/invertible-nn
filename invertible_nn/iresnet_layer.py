@@ -1,24 +1,107 @@
-"""
-Deprecated
-"""
-
 import torch
 from torch import nn
-
-# Needed to implement custom backward pass
-from torch.autograd import Function as Function
-
+from torch.autograd import Function
 from typing import Callable, Tuple, Any
 
 
-class InvertibleCouplingLayer(Function):
+class InvertibleResidualLayer(Function):
 
-    """
-    Custom Backpropagation function to allow (A) flusing memory in foward
-    and (B) activation recomputation reversibly in backward for gradient
-    calculation. Inspired by
-    https://github.com/RobinBruegger/RevTorch/blob/master/revtorch/revtorch.py
-    """
+    @staticmethod
+    def fixed_point_iteration(
+        F: Callable,
+        y: torch.Tensor,
+        max_iter: int,
+        atol: float = 1e-5,
+        verbose: bool = True
+    ) -> torch.Tensor:
+        x = y
+        for _ in range(max_iter):
+            x_prev = x
+            x = y - F(x_prev)
+            if torch.allclose(x, x_prev, atol=atol):
+                break
+        else:  # when loop did not break
+            if verbose:
+                print("Fixed point iteration did not converge.")
+        return x
+
+    @staticmethod
+    def anderson_acceleration(F, y, max_iter, atol=1e-5, m=5):
+        pass
+
+    @staticmethod
+    @torch.cuda.amp.custom_fwd
+    def forward(ctx, x: torch.Tensor, F: Callable, max_iter: int, use_anderson_acceleration: bool) -> torch.Tensor:
+        """
+        forward pass equations:
+        y = x + F(x)
+        F(x) must be 1-Lipschitz
+        """
+        ctx.F = F
+        if hasattr(x, "release_saved_output"):  ## invertible layer 의 출력인지 확인
+            x.release_saved_output()  # ctx.saved_tensors 에 있는 레퍼런스 삭제
+            ctx.save_output = x.save_output
+        ctx.requires_output = hasattr(x, "release_saved_output")  # 다음 레이어야 output 을 저장해야하는지 확인
+
+        output = x + F(x)
+
+        ctx.output = output.detach()
+        ctx.max_iter = max_iter
+        ctx.use_anderson_acceleration = use_anderson_acceleration
+
+        def release_saved_output():
+            del ctx.output
+            # delattr(ctx, 'output')
+        def save_output(x):
+            ctx.output = x
+        output.release_saved_output = release_saved_output
+        output.save_output = save_output
+
+        return output
+
+    @staticmethod
+    @torch.autograd.function.once_differentiable
+    @torch.cuda.amp.custom_bwd
+    def backward(ctx, dy: torch.Tensor) -> torch.Tensor:
+        y = ctx.output
+        F = ctx.F
+        max_iter = ctx.max_iter
+        use_anderson_acceleration = ctx.use_anderson_acceleration
+
+        # reconstruct x from y
+        if use_anderson_acceleration:
+            x = InvertibleResidualLayer.anderson_acceleration(F, y, max_iter)
+        else:
+            x = InvertibleResidualLayer.fixed_point_iteration(F, y, max_iter)
+
+        with torch.enable_grad():
+            x.requires_grad_(True)
+            F(x).backward(dy)
+            dx = x.grad + dy
+            x = x.detach()
+
+        if ctx.requires_output:
+            ctx.save_output(x.detach())
+
+        return dx, None, None, None
+
+
+class ResidualBlock(nn.Module):
+    def __init__(self, F: nn.Module):
+        super().__init__()
+        self.F = F
+        self.F.apply(self.apply_spectral_normalization)
+
+    @staticmethod
+    def apply_spectral_normalization(module):
+        if hasattr(module, "weight"):
+            torch.nn.utils.parametrizations.spectral_norm(module, n_power_iterations=50)
+
+    def forward(self, x):
+        return InvertibleResidualLayer.apply(x, self.F, 100, False)
+
+
+class InvertibleMomentumResidualLayer(Function):
 
     @staticmethod
     @torch.cuda.amp.custom_fwd
@@ -30,7 +113,6 @@ class InvertibleCouplingLayer(Function):
         Y_1 = X_1 + F(X_2), F = Attention
         Y_2 = X_2 + G(Y_1), G = MLP
         """
-        breakpoint()
         ctx.F = F
         ctx.G = G
         if hasattr(x, "release_saved_output"):  ## invertible layer 의 출력인지 확인
@@ -151,44 +233,37 @@ class InvertibleCouplingLayer(Function):
         return dx, None, None, None
 
 
-class CouplingBlock(nn.Module):
-    """
-    F 랑 G 는 임의의 모듈
-    F랑 G를 coupling 구조에 끼워넣음.
-    backward pass 할때는 뒷쪽 블락에서 보내준 activation 값을 이용해 중간값 재계산
-    Y_1 = X_1 + F(X_2)
-    Y_2 = X_2 + G(Y_1)
-    """
-    def __init__(self, F: nn.Module, G: nn.Module, invert_when_backward=True):
-        super().__init__()
-        self.F = F
-        self.G = G
-        self.invert_when_backward = invert_when_backward
+# class MomentumResidualBlock(nn.Module):
 
-    def forward(self, x):
-        if self.invert_when_backward:
-            return InvertibleCouplingLayer.apply(x, self.F, self.G)
-        else:
-            X_1, X_2 = torch.chunk(x, 2, dim=-1)
-            Y_1 = X_1 + self.F(X_2)
-            Y_2 = X_2 + self.G(Y_1)
-            return torch.cat([Y_1, Y_2], dim=-1)
+#     def __init__(self, F: nn.Module, gamma = 0.1, invert_when_backward=True):
+#         super().__init__()
+#         self.F = F
+#         self.invert_when_backward = invert_when_backward
+
+#     def forward(self, x):
+#         if self.invert_when_backward:
+#             return InvertibleMomentumResidualLayer.apply(x, self.)
+#         else:
+#             X, V = torch.chunk(x, 2, dim=-1)
+#             V = V + self.F(X)
+#             Y_2 = X_2 + self.G(Y_1)
+#             return torch.cat([Y_1, Y_2], dim=-1)
 
 
-def finite_diff_grad_check_couplingblock():
+def grad_check():
     # device = torch.device("cuda")
     device = torch.device("cpu")
     input = torch.rand(1, 16, requires_grad=True, dtype=torch.float64, device=device)
 
     num_blocks = 10
     mlp = lambda: nn.Sequential(
-        nn.LayerNorm(8),
-        nn.Linear(8, 8),
-        nn.GELU(),
-        nn.Linear(8, 8)
+        # nn.LayerNorm(8),
+        nn.Linear(16, 16),
+        nn.ReLU(),
+        nn.Linear(16, 16),
     )
     model = nn.Sequential(*[
-        CouplingBlock(mlp(), mlp())
+        ResidualBlock(mlp())
         for _ in range(num_blocks)
     ])
 
@@ -205,3 +280,5 @@ def finite_diff_grad_check_couplingblock():
         print("Gradient check passed!")
 
 
+if __name__ == "__main__":
+    grad_check()
