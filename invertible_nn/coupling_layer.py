@@ -45,6 +45,36 @@ class InvertibleCouplingLayer(Function):
 
         return y1, y2, output_hooks
 
+    # @staticmethod
+    # @torch.autograd.function.once_differentiable
+    # @torch.cuda.amp.custom_bwd
+    # def backward(ctx, dy1, dy2, _):
+    #     F = ctx.F
+    #     G = ctx.G
+    #     y1, y2 = ctx.output
+
+    #     with torch.enable_grad():
+    #         y1_ = y1.detach().requires_grad_(True)
+    #         g_y1 = G(y1_)
+    #         g_y1.backward(dy2)
+    #         g_y1 = g_y1.detach()
+
+    #     x2 = y2 - g_y1
+    #     dx1 = dy1 + y1_.grad
+
+    #     with torch.enable_grad():
+    #         x2_ = x2.detach().requires_grad_(True)
+    #         f_x2 = F(x2_)
+    #         f_x2.backward(dx1)
+    #         f_x2 = f_x2.detach()
+
+    #     x1 = y1 - f_x2
+    #     dx2 = dy2 + x2_.grad
+
+    #     if hasattr(ctx, "push_hook"):
+    #         ctx.push_hook((x1.detach(), x2.detach()))
+
+    #     return dx1, dx2, None, None, None
     @staticmethod
     @torch.autograd.function.once_differentiable
     @torch.cuda.amp.custom_bwd
@@ -53,22 +83,22 @@ class InvertibleCouplingLayer(Function):
         G = ctx.G
         y1, y2 = ctx.output
 
+        # Reconstruct x1, x2
         with torch.enable_grad():
             y1_ = y1.detach().requires_grad_(True)
             g_y1 = G(y1_)
-            g_y1.backward(dy2)
-            g_y1 = g_y1.detach()
-
-        x2 = y2 - g_y1
-        dx1 = dy1 + y1_.grad
+        x2 = y2 - g_y1.detach()
 
         with torch.enable_grad():
             x2_ = x2.detach().requires_grad_(True)
             f_x2 = F(x2_)
-            f_x2.backward(dx1)
-            f_x2 = f_x2.detach()
+        x1 = y1 - f_x2.detach()
 
-        x1 = y1 - f_x2
+        # Compute gradients
+        g_y1.backward(dy2)
+        dx1 = dy1 + y1_.grad
+
+        f_x2.backward(dx1)
         dx2 = dy2 + x2_.grad
 
         if hasattr(ctx, "push_hook"):
@@ -94,7 +124,7 @@ class CouplingBlock(nn.Module):
         return y1, y2, output_hooks
 
 
-def finite_diff_grad_check_couplingblock():
+def grad_check():
     # device = torch.device("cuda")
     device = torch.device("cpu")
     dtype = torch.float64
@@ -130,23 +160,18 @@ def finite_diff_grad_check_couplingblock():
     grad1 = input.grad.clone()
     input.grad.zero_()
     [module.zero_grad() for module in block_list]
-    breakpoint()
 
     for module in block_list:
         module.invert_for_backward = False
     forward_loss_fn(input).backward()
     grad2 = input.grad.clone()
-    breakpoint()
 
-    # assert torch.allclose(grad1, grad2, atol=1e-5, rtol=1e-5)
-
-    # forward_loss_fn(input).backward()
-    
-
+    if torch.allclose(grad1, grad2, atol=1e-5, rtol=1e-5):
+        print("Gradient check passed!")
 
     if torch.autograd.gradcheck(forward_loss_fn, input, nondet_tol=1e-5):
         print("Gradient check passed!")
 
 
 if __name__ == "__main__":
-    finite_diff_grad_check_couplingblock()
+    grad_check()
