@@ -156,6 +156,9 @@ def grad_check():
 
     if torch.allclose(grad1, grad2, atol=1e-5, rtol=1e-5):
         print("allclose Gradient check passed!")
+    else:
+        print("Gradient check failed!")
+        breakpoint()
 
     # if torch.autograd.gradcheck(forward_loss_fn, input, nondet_tol=1e-5):
     #     print("autograd.gradcheck Gradient check passed!")
