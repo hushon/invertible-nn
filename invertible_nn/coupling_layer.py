@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 # Needed to implement custom backward pass
-from torch.autograd import Function as Function
+from torch.autograd import Function
 
 from typing import Callable, Tuple, Any
 from dataclasses import dataclass
@@ -22,17 +22,17 @@ class InvertibleCouplingLayer(Function):
 
     @staticmethod
     @torch.cuda.amp.custom_fwd
-    def forward(ctx, X_1: torch.Tensor, X_2: torch.Tensor, F: nn.Module, G: nn.Module, output_hooks: OutputHooks = None):
+    def forward(ctx, x1: torch.Tensor, x2: torch.Tensor, F: nn.Module, G: nn.Module, output_hooks: OutputHooks = None):
         ctx.F = F
         ctx.G = G
         if output_hooks is not None:
             output_hooks.pop_hook()
             ctx.push_hook = output_hooks.push_hook
 
-        Y_1 = X_1 + F(X_2)
-        Y_2 = X_2 + G(Y_1)
+        y1 = x1 + F(x2)
+        y2 = x2 + G(y1)
 
-        ctx.output = (Y_1.detach(), Y_2.detach())
+        ctx.output = (y1.detach(), y2.detach())
 
         def pop_hook():
             output = ctx.output
@@ -43,44 +43,40 @@ class InvertibleCouplingLayer(Function):
             ctx.output = x
         output_hooks = OutputHooks(pop_hook, push_hook)
 
-        return Y_1, Y_2, output_hooks
+        return y1, y2, output_hooks
 
     @staticmethod
     @torch.autograd.function.once_differentiable
     @torch.cuda.amp.custom_bwd
-    def backward(ctx, dY_1, dY_2, _):
+    def backward(ctx, dy1, dy2, _):
         F = ctx.F
         G = ctx.G
-        Y_1, Y_2 = ctx.output
+        y1, y2 = ctx.output
 
         with torch.enable_grad():
-            Y_1.requires_grad_(True)
-            g_Y_1 = G(Y_1)
-            g_Y_1.backward(dY_2)
-        Y_1_grad = Y_1.grad
-        Y_1 = Y_1.detach()
-        g_Y_1 = g_Y_1.detach()
+            y1_ = y1.detach().requires_grad_(True)
+            g_y1 = G(y1_)
+            g_y1.backward(dy2)
+            g_y1 = g_y1.detach()
 
-        with torch.no_grad():
-            X_2 = Y_2 - g_Y_1
-            dX_1 = dY_1 + Y_1_grad
+        with torch.no_grad():  # 필요없을수도 있음
+            x2 = y2 - g_y1
+            dx1 = dy1 + y1_.grad
 
         with torch.enable_grad():
-            X_2.requires_grad_(True)
-            f_X_2 = F(X_2)
-            f_X_2.backward(dX_1)
-        X_2_grad = X_2.grad
-        X_2 = X_2.detach()
-        f_X_2 = f_X_2.detach()
+            x2_ = x2.detach().requires_grad_(True)
+            f_x2 = F(x2_)
+            f_x2.backward(dx1)
+            f_x2 = f_x2.detach()
 
         with torch.no_grad():
-            dX_2 = dY_2 + X_2_grad
+            x1 = y1 - f_x2
+            dx2 = dy2 + x2_.grad
 
         if hasattr(ctx, "push_hook"):
-            X_1 = Y_1 - f_X_2
-            ctx.push_hook((X_1.detach(), X_2.detach()))
+            ctx.push_hook((x1.detach(), x2.detach()))
 
-        return dX_1, dX_2, None, None, None
+        return dx1, dx2, None, None, None
 
 
 class CouplingBlock(nn.Module):
