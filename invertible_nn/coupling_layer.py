@@ -59,9 +59,8 @@ class InvertibleCouplingLayer(Function):
             g_y1.backward(dy2)
             g_y1 = g_y1.detach()
 
-        with torch.no_grad():  # 필요없을수도 있음
-            x2 = y2 - g_y1
-            dx1 = dy1 + y1_.grad
+        x2 = y2 - g_y1
+        dx1 = dy1 + y1_.grad
 
         with torch.enable_grad():
             x2_ = x2.detach().requires_grad_(True)
@@ -69,9 +68,8 @@ class InvertibleCouplingLayer(Function):
             f_x2.backward(dx1)
             f_x2 = f_x2.detach()
 
-        with torch.no_grad():
-            x1 = y1 - f_x2
-            dx2 = dy2 + x2_.grad
+        x1 = y1 - f_x2
+        dx2 = dy2 + x2_.grad
 
         if hasattr(ctx, "push_hook"):
             ctx.push_hook((x1.detach(), x2.detach()))
