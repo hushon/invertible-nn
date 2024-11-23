@@ -90,7 +90,7 @@ class ScaledCouplingBlock(nn.Module):
     x1_dtype = torch.float64
     x2_dtype = torch.float64
 
-    def __init__(self, F: nn.Module, G: nn.Module, alpha: float = 1.0, invert_for_backward=True):
+    def __init__(self, F: nn.Module, G: nn.Module, alpha: float, invert_for_backward=True):
         super().__init__()
         self.F = F
         self.G = G
@@ -111,8 +111,8 @@ class ScaledCouplingBlock(nn.Module):
 
 
 def grad_check():
-    # device = torch.device("cuda")
-    device = torch.device("cpu")
+    device = torch.device("cuda")
+    # device = torch.device("cpu")
     dtype = torch.float32
 
     input = torch.rand(1, 16, requires_grad=True, dtype=dtype, device=device)
@@ -128,8 +128,8 @@ def grad_check():
         ScaledCouplingBlock(get_mlp(), get_mlp(), 0.1).to(dtype=dtype, device=device) for _ in range(10)
     ]
     
-    # @torch.autocast("cuda", dtype=torch.bfloat16)
-    # @torch.cuda.amp.autocast(dtype=torch.bfloat16)
+
+    # @torch.autocast(device.type, dtype=torch.bfloat16)
     def forward_loss_fn(x):
         x1, x2 = x.chunk(2, dim=-1)
         output_hooks = None
@@ -157,8 +157,13 @@ def grad_check():
     if torch.allclose(grad1, grad2, atol=1e-5, rtol=1e-5):
         print("allclose Gradient check passed!")
     else:
-        print("Gradient check failed!")
-        breakpoint()
+        print("allclose Gradient check failed!")
+
+    if torch.nn.functional.cosine_similarity(grad1.view(-1), grad2.view(-1), dim=0) > 0.9:
+        print("cosine_similarity Gradient check passed!")
+    else:
+        print("cosine_similarity Gradient check failed!")
+    breakpoint()
 
     # if torch.autograd.gradcheck(forward_loss_fn, input, nondet_tol=1e-5):
     #     print("autograd.gradcheck Gradient check passed!")
