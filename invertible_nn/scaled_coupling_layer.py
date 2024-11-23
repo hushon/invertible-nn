@@ -104,9 +104,10 @@ class ScaledCouplingBlock(nn.Module):
         if self.invert_for_backward:
             y1, y2, output_hooks = ScaledInvertibleCouplingLayer.apply(x1, x2, self.F, self.G, self.alpha, output_hooks)
         else:
-            y1 = self.alpha * x1 + self.F(x2.to(torch.float32)).to(x1.dtype)
-            y2 = self.alpha * x2 + self.G(y1.to(torch.float32)).to(x2.dtype)
+            y1 = self.alpha * x1 + self.F(x2.to(torch.float32)).to(self.x1_dtype)
+            y2 = self.alpha * x2 + self.G(y1.to(torch.float32)).to(self.x2_dtype)
             output_hooks = None
+
         return y1, y2, output_hooks
 
 
