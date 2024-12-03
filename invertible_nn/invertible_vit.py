@@ -201,7 +201,8 @@ class InvertibleVisionTransformer(nn.Module):
             [
                 MEFT_Block1(
                     dim=self.embed_dim,
-                    num_heads=self.n_head
+                    num_heads=self.n_head,
+                    reduction_ratio=4
                 )
                 for _ in range(self.depth)
             ]
